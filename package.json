@@ -1,0 +1,10 @@
+{
+  "name": "dump-parser",
+  "version": "1.0.0",
+  "description": "ExamTopics question parser",
+  "main": "parse.js",
+  "type": "module",
+  "dependencies": {
+    "cheerio": "^1.0.0"
+  }
+}
