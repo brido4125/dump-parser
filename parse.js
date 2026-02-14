@@ -87,7 +87,15 @@ function parsePage(html, url) {
   });
 
   // Suggested answer
-  const answer = questionBody.find("span.correct-answer").first().text().trim();
+  const answerEl = questionBody.find("span.correct-answer").first();
+  const answer = answerEl.text().trim();
+
+  // Answer image (for HOTSPOT questions)
+  const answerImages = [];
+  answerEl.find("img").each((i, el) => {
+    const src = $(el).attr("src");
+    if (src) answerImages.push(src);
+  });
 
   // Community votes
   let communityVotes = [];
@@ -113,21 +121,24 @@ function parsePage(html, url) {
     answer,
     community_votes: communityVotes,
     images: images, // raw URLs, will be updated after download
+    answer_images: answerImages, // raw URLs for HOTSPOT answer images
     url,
   };
 }
 
 async function processImages(result) {
-  if (result.images.length === 0) return result;
+  const hasImages = result.images.length > 0;
+  const hasAnswerImages = result.answer_images.length > 0;
+  if (!hasImages && !hasAnswerImages) return result;
 
   if (!existsSync(IMAGES_DIR)) {
     await mkdir(IMAGES_DIR, { recursive: true });
   }
 
+  // Download question images
   const localPaths = [];
   for (let i = 0; i < result.images.length; i++) {
     let imgUrl = result.images[i];
-    // Handle relative URLs
     if (imgUrl.startsWith("/")) {
       imgUrl = `https://www.examtopics.com${imgUrl}`;
     }
@@ -139,16 +150,37 @@ async function processImages(result) {
     const ok = await downloadImage(imgUrl, localPath);
     if (ok) {
       localPaths.push(relativePath);
-      // Replace placeholder in question text
       result.question = result.question.replace(
         `[image_${i}]`,
         `[이미지: ${relativePath}]`
       );
     } else {
-      localPaths.push(imgUrl); // fallback to original URL
+      localPaths.push(imgUrl);
     }
   }
   result.images = localPaths;
+
+  // Download answer images (HOTSPOT)
+  const answerLocalPaths = [];
+  for (let i = 0; i < result.answer_images.length; i++) {
+    let imgUrl = result.answer_images[i];
+    if (imgUrl.startsWith("/")) {
+      imgUrl = `https://www.examtopics.com${imgUrl}`;
+    }
+    const ext = extname(new URL(imgUrl).pathname) || ".png";
+    const filename = `q${result.question_number}_answer_${i}${ext}`;
+    const localPath = resolve(IMAGES_DIR, filename);
+    const relativePath = `images/${filename}`;
+
+    const ok = await downloadImage(imgUrl, localPath);
+    if (ok) {
+      answerLocalPaths.push(relativePath);
+    } else {
+      answerLocalPaths.push(imgUrl);
+    }
+  }
+  result.answer_images = answerLocalPaths;
+
   return result;
 }
 

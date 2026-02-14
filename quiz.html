@@ -76,6 +76,23 @@
 
   .btn-sm { padding: 5px 12px; font-size: 0.78rem; }
 
+  .btn-flag { background: transparent; color: #aaa; border: 1.5px solid #ddd; }
+  .btn-flag:hover { color: #f59e0b; border-color: #f59e0b; }
+  .btn-flag.active { background: #fef3c7; color: #d97706; border-color: #f59e0b; }
+
+  .flag-count {
+    background: rgba(245,158,11,0.2);
+    color: #f59e0b;
+    padding: 5px 14px;
+    border-radius: 20px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+    user-select: none;
+  }
+  .flag-count:hover { background: rgba(245,158,11,0.35); }
+  .flag-count.filter-on { background: #f59e0b; color: #fff; }
+
   /* --- Carousel layout --- */
   .carousel-wrapper {
     display: flex;
@@ -181,6 +198,15 @@
     font-size: 1rem;
     margin-bottom: 20px;
     white-space: pre-wrap;
+  }
+
+  .q-image {
+    display: block;
+    max-width: 100%;
+    margin: 16px 0;
+    border-radius: 8px;
+    border: 1px solid #e0e0e0;
+    box-shadow: 0 1px 4px rgba(0,0,0,0.08);
   }
 
   .choices {
@@ -295,6 +321,7 @@
     <h1>AWS AIF-C01 Quiz</h1>
     <div class="header-stats">
       <span class="score-display" id="scoreDisplay">0문제</span>
+      <span class="flag-count" id="flagCount" onclick="toggleFlagFilter()" title="클릭하면 플래그 문제만 보기">&#9873; 0</span>
       <button class="btn btn-success btn-sm" onclick="gradeAll()">전체 채점</button>
       <button class="btn btn-sm" style="background:transparent;color:#fff;border:1.5px solid rgba(255,255,255,0.4)" onclick="resetAll()">전체 초기화</button>
     </div>
@@ -305,8 +332,12 @@
   <div class="nav-bar">
     <button class="nav-btn" id="prevBtn" onclick="go(-1)">&#8592;</button>
     <div class="nav-center">
-      <input class="nav-jump" id="navJump" type="number" min="1" value="1" onchange="jumpTo(this.value)">
-      <span id="navTotal">/ 0</span>
+      <span id="navPos" style="font-size:0.8rem;color:#999">1</span>
+      <span style="color:#999">/</span>
+      <span id="navTotal" style="font-size:0.8rem;color:#999">0</span>
+      <span style="color:#999;margin:0 4px">|</span>
+      <span style="font-size:0.8rem;color:#999">Q</span>
+      <input class="nav-jump" id="navJump" type="number" min="1" value="1" placeholder="Q#" onchange="jumpToQuestion(this.value)">
       <div class="progress-bar-bg" style="width:120px">
         <div class="progress-bar-fill" id="progressBar" style="width:0%"></div>
       </div>
@@ -326,13 +357,15 @@ let graded = {};
 let currentIdx = 0;
 let totalCorrect = 0;
 let totalGraded = 0;
+let flagged = new Set();
+let flagFilterOn = false;
 
 async function init() {
   try {
     const res = await fetch('results.json');
     questions = await res.json();
-    document.getElementById('navTotal').textContent = `/ ${questions.length}`;
-    document.getElementById('navJump').max = questions.length;
+    document.getElementById('navTotal').textContent = questions.length;
+    document.getElementById('navJump').max = questions[questions.length - 1].question_number;
     renderCard(0);
     updateNav();
   } catch (e) {
@@ -344,10 +377,15 @@ function isMultiAnswer(answer) {
   return answer.length > 1;
 }
 
+function isHotspot(q) {
+  return q.answer_images && q.answer_images.length > 0;
+}
+
 function renderCard(idx) {
   const area = document.getElementById('cardArea');
   const q = questions[idx];
-  const multi = isMultiAnswer(q.answer);
+  const hotspot = isHotspot(q);
+  const multi = !hotspot && isMultiAnswer(q.answer);
   const inputType = multi ? 'checkbox' : 'radio';
   const inputName = `q_${idx}`;
 
@@ -365,23 +403,29 @@ function renderCard(idx) {
       ).join('')
     : '';
 
+  const answerImagesHtml = hotspot
+    ? q.answer_images.map(src => `<img class="q-image" src="${src}" alt="정답 이미지" loading="lazy">`).join('')
+    : '';
+
   area.innerHTML = `
     <div class="card" id="card_${idx}">
       <div class="card-header">
-        <span class="q-number">Q${q.question_number} · Topic ${q.topic}</span>
+        <span class="q-number">Q${q.question_number} · Topic ${q.topic}${hotspot ? ' · HOTSPOT' : ''}</span>
         <div class="card-actions">
+          <button class="btn btn-flag btn-sm ${flagged.has(idx) ? 'active' : ''}" id="flagBtn_${idx}" onclick="toggleFlag(${idx})">&#9873; ${flagged.has(idx) ? '해제' : '플래그'}</button>
           <button class="btn btn-outline btn-sm" onclick="copyQuestion(${idx})">복사</button>
         </div>
       </div>
-      <div class="q-text">${escapeHtml(q.question)}</div>
-      ${multi ? `<div style="font-size:0.8rem;color:#4361ee;margin-bottom:12px;font-weight:600;">※ 복수 정답 (${q.answer.length}개 선택)</div>` : ''}
-      <ul class="choices">${choicesHtml}</ul>
+      <div class="q-text">${renderQuestionText(q.question)}</div>
+      ${!hotspot && multi ? `<div style="font-size:0.8rem;color:#4361ee;margin-bottom:12px;font-weight:600;">※ 복수 정답 (${q.answer.length}개 선택)</div>` : ''}
+      ${choicesHtml ? `<ul class="choices">${choicesHtml}</ul>` : ''}
       <div class="card-footer">
-        <button class="btn btn-primary btn-sm" onclick="gradeOne(${idx})">채점</button>
+        <button class="btn btn-primary btn-sm" onclick="${hotspot ? `showHotspotAnswer(${idx})` : `gradeOne(${idx})`}">${hotspot ? '정답 보기' : '채점'}</button>
         <button class="btn btn-danger-outline btn-sm" onclick="resetOne(${idx})">초기화</button>
       </div>
       <div class="answer-box" id="answer_${idx}">
         <div id="answer_result_${idx}"></div>
+        ${answerImagesHtml ? `<div id="answer_images_${idx}">${answerImagesHtml}</div>` : ''}
         ${votesHtml ? `<div class="community-votes">커뮤니티 투표: ${votesHtml}</div>` : ''}
       </div>
     </div>
@@ -399,10 +443,31 @@ function escapeHtml(text) {
   return text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
+function renderQuestionText(text) {
+  let html = escapeHtml(text);
+  // Replace [이미지: path] placeholders with <img> tags
+  html = html.replace(/\[이미지:\s*([^\]]+)\]/g, (_, path) => {
+    return `<img class="q-image" src="${path.trim()}" alt="문제 이미지" loading="lazy">`;
+  });
+  return html;
+}
+
 function restoreGradedState(idx) {
   const q = questions[idx];
   const info = graded[idx];
   const card = document.getElementById(`card_${idx}`);
+
+  // HOTSPOT restore
+  if (info.hotspot) {
+    const answerBox = document.getElementById(`answer_${idx}`);
+    const resultDiv = document.getElementById(`answer_result_${idx}`);
+    answerBox.style.display = 'block';
+    answerBox.style.background = '#f0faf8';
+    answerBox.style.borderColor = '#b8e6df';
+    resultDiv.innerHTML = `<span class="label">정답 (HOTSPOT)</span>`;
+    return;
+  }
+
   card.classList.add(info.isCorrect ? 'correct' : 'wrong');
 
   const correctLetters = q.answer.split('');
@@ -509,10 +574,25 @@ function gradeOne(idx) {
   updateNav();
 }
 
+function showHotspotAnswer(idx) {
+  if (graded[idx]) return;
+
+  graded[idx] = { isCorrect: null, selected: [], hotspot: true };
+
+  const answerBox = document.getElementById(`answer_${idx}`);
+  const resultDiv = document.getElementById(`answer_result_${idx}`);
+  answerBox.style.display = 'block';
+  answerBox.style.background = '#f0faf8';
+  answerBox.style.borderColor = '#b8e6df';
+  resultDiv.innerHTML = `<span class="label">정답 (HOTSPOT)</span>`;
+}
+
 function resetOne(idx) {
   if (graded[idx]) {
-    if (graded[idx].isCorrect) totalCorrect--;
-    totalGraded--;
+    if (!graded[idx].hotspot) {
+      if (graded[idx].isCorrect) totalCorrect--;
+      totalGraded--;
+    }
     delete graded[idx];
     updateScore();
   }
@@ -522,13 +602,11 @@ function resetOne(idx) {
 }
 
 function gradeAll() {
-  questions.forEach((_, idx) => {
+  questions.forEach((q, idx) => {
     if (!graded[idx]) {
-      // Need to render first to get selected state
-      if (idx !== currentIdx) {
-        // For non-current cards, grade with no selection
-        const q = questions[idx];
-        const correct = q.answer.split('').sort().join('');
+      if (isHotspot(q)) {
+        graded[idx] = { isCorrect: null, selected: [], hotspot: true };
+      } else if (idx !== currentIdx) {
         graded[idx] = { isCorrect: false, selected: [] };
         totalGraded++;
       } else {
@@ -555,28 +633,111 @@ function resetAll() {
 }
 
 function go(dir) {
-  const next = currentIdx + dir;
-  if (next < 0 || next >= questions.length) return;
-  currentIdx = next;
+  if (flagFilterOn) {
+    const flaggedList = [...flagged].sort((a, b) => a - b);
+    if (flaggedList.length === 0) return;
+    const curPos = flaggedList.indexOf(currentIdx);
+    let nextPos;
+    if (dir === 1) {
+      nextPos = curPos === -1
+        ? flaggedList.find(i => i > currentIdx)
+        : flaggedList[curPos + 1];
+    } else {
+      nextPos = curPos === -1
+        ? [...flaggedList].reverse().find(i => i < currentIdx)
+        : flaggedList[curPos - 1];
+    }
+    if (nextPos === undefined) return;
+    currentIdx = nextPos;
+  } else {
+    const next = currentIdx + dir;
+    if (next < 0 || next >= questions.length) return;
+    currentIdx = next;
+  }
   renderCard(currentIdx);
   updateNav();
 }
 
-function jumpTo(val) {
-  const num = parseInt(val, 10);
-  if (isNaN(num) || num < 1 || num > questions.length) return;
-  currentIdx = num - 1;
+function jumpToQuestion(val) {
+  const qNum = parseInt(val, 10);
+  if (isNaN(qNum)) return;
+  const idx = questions.findIndex(q => q.question_number === qNum);
+  if (idx === -1) {
+    showToast(`Q${qNum} 문제를 찾을 수 없습니다`);
+    return;
+  }
+  if (flagFilterOn && !flagged.has(idx)) {
+    showToast(`Q${qNum}은 플래그되지 않은 문제입니다`);
+    return;
+  }
+  currentIdx = idx;
   renderCard(currentIdx);
   updateNav();
+}
+
+function toggleFlag(idx) {
+  if (flagged.has(idx)) {
+    flagged.delete(idx);
+    showToast(`Q${questions[idx].question_number} 플래그 해제`);
+  } else {
+    flagged.add(idx);
+    showToast(`Q${questions[idx].question_number} 플래그`);
+  }
+  renderCard(currentIdx);
+  updateFlagCount();
+  updateNav();
+}
+
+function toggleFlagFilter() {
+  flagFilterOn = !flagFilterOn;
+  const el = document.getElementById('flagCount');
+  el.classList.toggle('filter-on', flagFilterOn);
+
+  if (flagFilterOn) {
+    if (flagged.size === 0) {
+      showToast('플래그된 문제가 없습니다');
+      flagFilterOn = false;
+      el.classList.remove('filter-on');
+      return;
+    }
+    // Jump to nearest flagged question
+    if (!flagged.has(currentIdx)) {
+      const sorted = [...flagged].sort((a, b) => a - b);
+      currentIdx = sorted[0];
+    }
+    showToast(`플래그 필터 ON (${flagged.size}문제)`);
+  } else {
+    showToast('플래그 필터 OFF');
+  }
+  renderCard(currentIdx);
+  updateNav();
+}
+
+function updateFlagCount() {
+  document.getElementById('flagCount').innerHTML = `&#9873; ${flagged.size}`;
 }
 
 function updateNav() {
-  document.getElementById('navJump').value = currentIdx + 1;
-  document.getElementById('prevBtn').disabled = currentIdx === 0;
-  document.getElementById('nextBtn').disabled = currentIdx === questions.length - 1;
+  const q = questions[currentIdx];
+  document.getElementById('navJump').value = q ? q.question_number : '';
 
-  const pct = questions.length > 0 ? ((currentIdx + 1) / questions.length * 100) : 0;
-  document.getElementById('progressBar').style.width = pct + '%';
+  if (flagFilterOn) {
+    const flaggedList = [...flagged].sort((a, b) => a - b);
+    const pos = flaggedList.indexOf(currentIdx);
+    document.getElementById('navPos').textContent = pos + 1;
+    document.getElementById('navTotal').textContent = flaggedList.length;
+    document.getElementById('prevBtn').disabled = pos <= 0;
+    document.getElementById('nextBtn').disabled = pos >= flaggedList.length - 1;
+    const pct = flaggedList.length > 0 ? ((pos + 1) / flaggedList.length * 100) : 0;
+    document.getElementById('progressBar').style.width = pct + '%';
+  } else {
+    document.getElementById('navPos').textContent = currentIdx + 1;
+    document.getElementById('navTotal').textContent = questions.length;
+    document.getElementById('prevBtn').disabled = currentIdx === 0;
+    document.getElementById('nextBtn').disabled = currentIdx === questions.length - 1;
+    const pct = questions.length > 0 ? ((currentIdx + 1) / questions.length * 100) : 0;
+    document.getElementById('progressBar').style.width = pct + '%';
+  }
 }
 
 function updateScore() {
